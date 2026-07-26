@@ -1,4 +1,4 @@
-// 🎵 EXTRATOR DE LETRA — COMPLETO E CORRIGIDO
+// 🎵 EXTRATOR DE LETRA
 // ✅ Fontes: LRCLIB (principal) → lyrics.ovh (fallback) → Vagalume (fallback)
 // ✅ Funciona no Termux sem conflitos
 // ✅ Sem necessidade de API Key

@@ -24,7 +24,7 @@
     "google-translate-api-x": "^10.7.3",
     "instagram-url-direct": "^2.0.7",
     "jimp": "^1.6.1",
-    "letras-de-musica": "^2.0.1",
+    "lyrics-lib": "^2.0.0",
     "node-cron": "^4.2.1",
     "node-fetch": "^3.3.2",
     "pg": "^8.16.3",

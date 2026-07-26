@@ -1,22 +1,125 @@
-// nsfwDetector.js - Detector de conteúdo impróprio usando Sightengine
+// nsfwDetector.js - Detector NSFW para Imagens e Stickers
 import axios from 'axios';
 import FormData from 'form-data';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import sharp from 'sharp';
+
+const execPromise = promisify(exec);
 
 // ============================================
 // ⚙️ CONFIGURAÇÕES
 // ============================================
 const CONFIG = {
-    apiUser: '1675050557',    // ← Número do "Usuário da API"
-    apiSecret: 'VCgsJL9qxBaZ9VQZNbtibaeeYYBbSweD',  // ← "Segredo da API" após revelar
+    apiUser: '1675050557',
+    apiSecret: 'VCgsJL9qxBaZ9VQZNbtibaeeYYBbSweD',
     limiteNsfw: 0.7,
     timeoutMs: 15000,
+    tempDir: join(process.cwd(), 'temp'),
 };
+
+// ============================================
+// 🔧 CONVERTER WEBP → PNG (estático e animado)
+// ============================================
+async function webpParaPng(bufferWebp) {
+    const timestamp = Date.now();
+    const inputPath  = join(CONFIG.tempDir, `sticker_${timestamp}.webp`);
+    const outputPath = join(CONFIG.tempDir, `sticker_${timestamp}.png`);
+    const gifPath    = join(CONFIG.tempDir, `sticker_${timestamp}.gif`);
+
+    try {
+        // ✅ Método 1: Sharp (melhor para WebP animado do WhatsApp)
+        try {
+            const pngBuffer = await sharp(bufferWebp, { pages: 1 })
+                .png()
+                .toBuffer();
+
+            if (pngBuffer && pngBuffer.length > 100) {
+                console.log('✅ Sticker convertido (Método 1: Sharp)');
+                return pngBuffer;
+            }
+        } catch (e) {
+            console.log('⚠️ Sharp falhou:', e.message);
+        }
+
+        // ✅ Método 2: Sharp pegando primeira página explicitamente
+        try {
+            const pngBuffer = await sharp(bufferWebp, { page: 0 })
+                .png()
+                .toBuffer();
+
+            if (pngBuffer && pngBuffer.length > 100) {
+                console.log('✅ Sticker convertido (Método 2: Sharp página 0)');
+                return pngBuffer;
+            }
+        } catch (e) {
+            console.log('⚠️ Sharp página 0 falhou:', e.message);
+        }
+
+        // ✅ Método 3: FFmpeg ignore_loop
+        writeFileSync(inputPath, bufferWebp);
+        try {
+            await execPromise(
+                `ffmpeg -ignore_loop 0 -i "${inputPath}" -vframes 1 -y "${outputPath}"`,
+                { timeout: 10000 }
+            );
+            if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                console.log('✅ Sticker convertido (Método 3: FFmpeg ignore_loop)');
+                return readFileSync(outputPath);
+            }
+        } catch {}
+
+        // ✅ Método 4: FFmpeg via GIF intermediário
+        try {
+            await execPromise(
+                `ffmpeg -i "${inputPath}" -y "${gifPath}"`,
+                { timeout: 10000 }
+            );
+            if (existsSync(gifPath)) {
+                await execPromise(
+                    `ffmpeg -i "${gifPath}" -vframes 1 -y "${outputPath}"`,
+                    { timeout: 10000 }
+                );
+                if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                    console.log('✅ Sticker convertido (Método 4: via GIF)');
+                    return readFileSync(outputPath);
+                }
+            }
+        } catch {} finally {
+            try { if (existsSync(gifPath)) unlinkSync(gifPath); } catch {}
+        }
+
+        // ✅ Método 5: FFmpeg probesize maior
+        try {
+            await execPromise(
+                `ffmpeg -analyzeduration 100M -probesize 100M -i "${inputPath}" -vframes 1 -y "${outputPath}"`,
+                { timeout: 15000 }
+            );
+            if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                console.log('✅ Sticker convertido (Método 5: probesize)');
+                return readFileSync(outputPath);
+            }
+        } catch {}
+
+        console.warn('⚠️ Todos os métodos falharam para este sticker');
+        return null;
+
+    } catch (erro) {
+        console.error('❌ Erro ao converter WebP:', erro.message);
+        return null;
+    } finally {
+        try { if (existsSync(inputPath))  unlinkSync(inputPath);  } catch {}
+        try { if (existsSync(outputPath)) unlinkSync(outputPath); } catch {}
+    }
+}
 
 // ============================================
 // 🔍 FUNÇÃO PRINCIPAL
 // ============================================
-async function detectarNSFW(bufferImagem) {
+async function detectarNSFW(bufferImagem, tipo = 'image/jpeg') {
     try {
         if (!bufferImagem || !Buffer.isBuffer(bufferImagem)) {
             console.warn('⚠️ Buffer de imagem inválido');
@@ -28,13 +131,12 @@ async function detectarNSFW(bufferImagem) {
             return { isNsfw: false, erro: true, motivo: 'Imagem muito pequena' };
         }
 
-        console.log(`📸 Analisando imagem (${Math.round(bufferImagem.length / 1024)}KB)...`);
+        console.log(`📸 Analisando (${Math.round(bufferImagem.length / 1024)}KB | tipo: ${tipo})...`);
 
-        // Enviar como multipart/form-data (mais confiável que base64)
         const formData = new FormData();
         formData.append('media', bufferImagem, {
-            filename: 'imagem.jpg',
-            contentType: 'image/jpeg',
+            filename: tipo === 'image/png' ? 'imagem.png' : 'imagem.jpg',
+            contentType: tipo,
         });
         formData.append('models', 'nudity-2.0');
         formData.append('api_user', CONFIG.apiUser);
@@ -51,14 +153,11 @@ async function detectarNSFW(bufferImagem) {
 
         const resultado = resposta.data;
 
-        console.log('📋 Resposta Sightengine:', JSON.stringify(resultado, null, 2));
-
         if (!resultado || resultado.status !== 'success') {
-            console.warn('⚠️ Resposta inválida da Sightengine:', resultado);
-            return { isNsfw: false, erro: true, motivo: 'Resposta inválida da API' };
+            console.warn('⚠️ Resposta inválida da Sightengine');
+            return { isNsfw: false, erro: true, motivo: 'Resposta inválida' };
         }
 
-        // Pegar os scores de nudez
         const nudity = resultado.nudity;
         const scoreNsfw = Math.max(
             nudity?.sexual_activity || 0,
@@ -68,7 +167,7 @@ async function detectarNSFW(bufferImagem) {
 
         const isNsfw = scoreNsfw > CONFIG.limiteNsfw;
 
-        console.log(`📊 Score NSFW: ${Math.round(scoreNsfw * 100)}% | Resultado: ${isNsfw ? '🚫 NSFW' : '✅ Seguro'}`);
+        console.log(`📊 Score NSFW: ${Math.round(scoreNsfw * 100)}% | ${isNsfw ? '🚫 NSFW' : '✅ Seguro'}`);
 
         return {
             isNsfw,
@@ -79,12 +178,8 @@ async function detectarNSFW(bufferImagem) {
 
     } catch (erro) {
         if (erro.code === 'ECONNABORTED') {
-            console.error('❌ Timeout na API Sightengine');
-            return { isNsfw: false, erro: true, motivo: 'Timeout na API' };
-        }
-        if (erro.response?.status === 400) {
-            console.error('❌ Erro 400 - Requisição inválida:', erro.response?.data);
-            return { isNsfw: false, erro: true, motivo: 'Requisição inválida' };
+            console.error('❌ Timeout na API');
+            return { isNsfw: false, erro: true, motivo: 'Timeout' };
         }
         if (erro.response?.status === 401) {
             console.error('❌ Credenciais inválidas');
@@ -95,9 +190,45 @@ async function detectarNSFW(bufferImagem) {
             return { isNsfw: false, erro: true, motivo: 'Rate limit atingido' };
         }
         console.error('❌ Erro na detecção NSFW:', erro.message);
-        console.error('❌ Detalhes:', erro.response?.data);
         return { isNsfw: false, erro: true, motivo: erro.message };
     }
+}
+
+// ============================================
+// ⚖️ TOMAR AÇÃO SE FOR NSFW
+// ============================================
+async function _tomarAcao(sock, msg, from, resultado) {
+    if (resultado.erro) {
+        console.log('⚠️ Erro na API, liberado por padrão');
+        return false;
+    }
+
+    if (resultado.isNsfw) {
+        console.log(`🚫 Conteúdo NSFW! Score: ${resultado.score}`);
+
+        try {
+            await sock.sendMessage(from, { delete: msg.key });
+            console.log('✅ Mensagem apagada');
+        } catch (e) {
+            console.error('❌ Erro ao apagar:', e.message);
+        }
+
+        const sender = msg.key.participant || msg.key.remoteJid;
+
+        await sock.sendMessage(from, {
+            text:
+                `🚫 *CONTEÚDO IMPRÓPRIO REMOVIDO*\n\n` +
+                `👤 Usuário: @${sender.split('@')[0]}\n` +
+                `📊 Score: ${resultado.score}\n` +
+                `⚠️ Conteúdo removido automaticamente por violar as regras do grupo.`,
+            mentions: [sender],
+        });
+
+        return true;
+    }
+
+    console.log(`✅ Conteúdo seguro (${resultado.score}), liberado`);
+    return false;
 }
 
 // ============================================
@@ -105,45 +236,35 @@ async function detectarNSFW(bufferImagem) {
 // ============================================
 async function verificarImagemGrupo(sock, msg, from) {
     try {
-        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        const messageType = Object.keys(msg.message || {})[0];
 
-        if (!buffer) {
-            console.warn('⚠️ Não foi possível baixar a imagem');
-            return false;
+        // ✅ Imagem normal
+        if (messageType === 'imageMessage') {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            if (!buffer) return false;
+
+            const resultado = await detectarNSFW(buffer, 'image/jpeg');
+            return await _tomarAcao(sock, msg, from, resultado);
         }
 
-        const resultado = await detectarNSFW(buffer);
+        // ✅ Sticker / Figurinha
+        if (messageType === 'stickerMessage') {
+            console.log('🎭 Sticker detectado! Convertendo para análise...');
 
-        if (resultado.erro) {
-            console.log('⚠️ Erro na API, imagem liberada por padrão');
-            return false;
-        }
+            const bufferWebp = await downloadMediaMessage(msg, 'buffer', {});
+            if (!bufferWebp) return false;
 
-        if (resultado.isNsfw) {
-            console.log(`🚫 Imagem NSFW detectada! Score: ${resultado.score}`);
+            const bufferPng = await webpParaPng(bufferWebp);
 
-            try {
-                await sock.sendMessage(from, { delete: msg.key });
-                console.log('✅ Mensagem apagada com sucesso');
-            } catch (erroDelete) {
-                console.error('❌ Erro ao apagar mensagem:', erroDelete.message);
+            if (!bufferPng) {
+                console.warn('⚠️ Não foi possível converter sticker, liberando por padrão');
+                return false;
             }
 
-            const sender = msg.key.participant || msg.key.remoteJid;
-
-            await sock.sendMessage(from, {
-                text:
-                    `🚫 *CONTEÚDO IMPRÓPRIO REMOVIDO*\n\n` +
-                    `👤 Usuário: @${sender.split('@')[0]}\n` +
-                    `📊 Score: ${resultado.score}\n` +
-                    `⚠️ Imagem removida automaticamente por violar as regras do grupo.`,
-                mentions: [sender],
-            });
-
-            return true;
+            const resultado = await detectarNSFW(bufferPng, 'image/png');
+            return await _tomarAcao(sock, msg, from, resultado);
         }
 
-        console.log(`✅ Imagem segura (${resultado.score}), liberada`);
         return false;
 
     } catch (erro) {

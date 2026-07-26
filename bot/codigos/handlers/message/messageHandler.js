@@ -331,12 +331,12 @@ export async function handleMessages(sock, message) {
                 moderacaoAvancada(sock, message),
                 handleAntiLink(sock, message, from),
             ]);
-
-            // 🔞 Verificar imagem NSFW
-            if (messageType === 'imageMessage') {
-                const foiNsfw = await verificarImagemGrupo(sock, message, from);
-                if (foiNsfw) return;
-            }
+            
+            // 🔞 Verificar imagem e sticker NSFW
+        if (messageType === 'imageMessage' || messageType === 'stickerMessage') {
+            const foiNsfw = await verificarImagemGrupo(sock, message, from);
+            if (foiNsfw) return;
+         }
         }
 
         // 🔥 ReplyTag

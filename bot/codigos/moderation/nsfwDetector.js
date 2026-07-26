@@ -1,4 +1,4 @@
-// nsfwDetector.js - Detector NSFW para Imagens e Stickers
+// nsfwDetector.js - Detector NSFW para Imagens, Stickers e Vídeos
 import axios from 'axios';
 import FormData from 'form-data';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
@@ -22,7 +22,7 @@ const CONFIG = {
 };
 
 // ============================================
-// 🔧 CONVERTER WEBP → PNG (estático e animado)
+// 🔧 CONVERTER WEBP → PNG (stickers)
 // ============================================
 async function webpParaPng(bufferWebp) {
     const timestamp = Date.now();
@@ -31,12 +31,11 @@ async function webpParaPng(bufferWebp) {
     const gifPath    = join(CONFIG.tempDir, `sticker_${timestamp}.gif`);
 
     try {
-        // ✅ Método 1: Sharp (melhor para WebP animado do WhatsApp)
+        // Método 1: Sharp (melhor para WebP animado do WhatsApp)
         try {
             const pngBuffer = await sharp(bufferWebp, { pages: 1 })
                 .png()
                 .toBuffer();
-
             if (pngBuffer && pngBuffer.length > 100) {
                 console.log('✅ Sticker convertido (Método 1: Sharp)');
                 return pngBuffer;
@@ -45,12 +44,11 @@ async function webpParaPng(bufferWebp) {
             console.log('⚠️ Sharp falhou:', e.message);
         }
 
-        // ✅ Método 2: Sharp pegando primeira página explicitamente
+        // Método 2: Sharp página 0
         try {
             const pngBuffer = await sharp(bufferWebp, { page: 0 })
                 .png()
                 .toBuffer();
-
             if (pngBuffer && pngBuffer.length > 100) {
                 console.log('✅ Sticker convertido (Método 2: Sharp página 0)');
                 return pngBuffer;
@@ -59,7 +57,7 @@ async function webpParaPng(bufferWebp) {
             console.log('⚠️ Sharp página 0 falhou:', e.message);
         }
 
-        // ✅ Método 3: FFmpeg ignore_loop
+        // Método 3: FFmpeg ignore_loop
         writeFileSync(inputPath, bufferWebp);
         try {
             await execPromise(
@@ -72,7 +70,7 @@ async function webpParaPng(bufferWebp) {
             }
         } catch {}
 
-        // ✅ Método 4: FFmpeg via GIF intermediário
+        // Método 4: FFmpeg via GIF
         try {
             await execPromise(
                 `ffmpeg -i "${inputPath}" -y "${gifPath}"`,
@@ -92,7 +90,7 @@ async function webpParaPng(bufferWebp) {
             try { if (existsSync(gifPath)) unlinkSync(gifPath); } catch {}
         }
 
-        // ✅ Método 5: FFmpeg probesize maior
+        // Método 5: FFmpeg probesize maior
         try {
             await execPromise(
                 `ffmpeg -analyzeduration 100M -probesize 100M -i "${inputPath}" -vframes 1 -y "${outputPath}"`,
@@ -109,6 +107,79 @@ async function webpParaPng(bufferWebp) {
 
     } catch (erro) {
         console.error('❌ Erro ao converter WebP:', erro.message);
+        return null;
+    } finally {
+        try { if (existsSync(inputPath))  unlinkSync(inputPath);  } catch {}
+        try { if (existsSync(outputPath)) unlinkSync(outputPath); } catch {}
+    }
+}
+
+// ============================================
+// 🎬 EXTRAIR FRAME DO VÍDEO
+// ============================================
+async function extrairFrameVideo(bufferVideo) {
+    const timestamp = Date.now();
+    const inputPath  = join(CONFIG.tempDir, `video_${timestamp}.mp4`);
+    const outputPath = join(CONFIG.tempDir, `frame_${timestamp}.png`);
+
+    try {
+        writeFileSync(inputPath, bufferVideo);
+
+        // Pegar duração do vídeo
+        let duracao = 0;
+        try {
+            const { stdout } = await execPromise(
+                `ffprobe -v error -show_entries format=duration -of csv=p=0 "${inputPath}"`,
+                { timeout: 10000 }
+            );
+            duracao = parseFloat(stdout.trim()) || 0;
+        } catch {}
+
+        // Extrair frame do meio do vídeo (mais representativo)
+        const tempoFrame = duracao > 2 ? (duracao / 2).toFixed(2) : '0';
+        console.log(`🎬 Extraindo frame em ${tempoFrame}s de ${duracao.toFixed(1)}s de vídeo...`);
+
+        // Método 1: Frame do meio
+        try {
+            await execPromise(
+                `ffmpeg -ss ${tempoFrame} -i "${inputPath}" -vframes 1 -y "${outputPath}"`,
+                { timeout: 15000 }
+            );
+            if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                console.log('✅ Frame extraído (Método 1: meio do vídeo)');
+                return readFileSync(outputPath);
+            }
+        } catch {}
+
+        // Método 2: Primeiro frame (fallback)
+        try {
+            await execPromise(
+                `ffmpeg -i "${inputPath}" -vframes 1 -y "${outputPath}"`,
+                { timeout: 15000 }
+            );
+            if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                console.log('✅ Frame extraído (Método 2: primeiro frame)');
+                return readFileSync(outputPath);
+            }
+        } catch {}
+
+        // Método 3: Frame com scale para garantir compatibilidade
+        try {
+            await execPromise(
+                `ffmpeg -i "${inputPath}" -vf "select=eq(n\\,0),scale=512:-1" -vframes 1 -y "${outputPath}"`,
+                { timeout: 15000 }
+            );
+            if (existsSync(outputPath) && readFileSync(outputPath).length > 100) {
+                console.log('✅ Frame extraído (Método 3: com scale)');
+                return readFileSync(outputPath);
+            }
+        } catch {}
+
+        console.warn('⚠️ Não foi possível extrair frame do vídeo');
+        return null;
+
+    } catch (erro) {
+        console.error('❌ Erro ao extrair frame do vídeo:', erro.message);
         return null;
     } finally {
         try { if (existsSync(inputPath))  unlinkSync(inputPath);  } catch {}
@@ -255,13 +326,31 @@ async function verificarImagemGrupo(sock, msg, from) {
             if (!bufferWebp) return false;
 
             const bufferPng = await webpParaPng(bufferWebp);
-
             if (!bufferPng) {
                 console.warn('⚠️ Não foi possível converter sticker, liberando por padrão');
                 return false;
             }
 
             const resultado = await detectarNSFW(bufferPng, 'image/png');
+            return await _tomarAcao(sock, msg, from, resultado);
+        }
+
+        // ✅ Vídeo
+        if (messageType === 'videoMessage') {
+            console.log('🎬 Vídeo detectado! Extraindo frame para análise...');
+
+            const bufferVideo = await downloadMediaMessage(msg, 'buffer', {});
+            if (!bufferVideo) return false;
+
+            console.log(`📦 Vídeo baixado: ${Math.round(bufferVideo.length / 1024)}KB`);
+
+            const bufferFrame = await extrairFrameVideo(bufferVideo);
+            if (!bufferFrame) {
+                console.warn('⚠️ Não foi possível extrair frame, liberando por padrão');
+                return false;
+            }
+
+            const resultado = await detectarNSFW(bufferFrame, 'image/png');
             return await _tomarAcao(sock, msg, from, resultado);
         }
 

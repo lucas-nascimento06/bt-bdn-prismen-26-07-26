@@ -3,6 +3,8 @@ import AutoTagHandler from '../../moderation/autoTagHandler.js';
 import ReplyTagHandler from '../../moderation/replyTagHandler.js';
 import olhinhoHandler from './olhinhoHandler.js';
 import alertaHandler from '../../moderation/alertaHandler.js';
+import { verificarImagemGrupo } from '../../moderation/nsfwDetector.js';
+
 import {
     handleSignos
 } from '../../moderation/signosHandler.js';
@@ -329,6 +331,12 @@ export async function handleMessages(sock, message) {
                 moderacaoAvancada(sock, message),
                 handleAntiLink(sock, message, from),
             ]);
+
+            // 🔞 Verificar imagem NSFW
+            if (messageType === 'imageMessage') {
+                const foiNsfw = await verificarImagemGrupo(sock, message, from);
+                if (foiNsfw) return;
+            }
         }
 
         // 🔥 ReplyTag

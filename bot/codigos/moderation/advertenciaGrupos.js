@@ -16,7 +16,7 @@ const CONFIG = {
     URL_AUDIOS_JSON: 'https://raw.githubusercontent.com/lucas-nascimento06/audio-regras/refs/heads/main/audios-regras.json',
     DOWNLOAD_TIMEOUT: 30000,
     MAX_RETRIES: 3,
-    DELAY_ENTRE_AUDIOS: 2000 // 2 segundos entre cada áudio
+    DELAY_ENTRE_AUDIOS: 2000
 };
 
 // ============================================
